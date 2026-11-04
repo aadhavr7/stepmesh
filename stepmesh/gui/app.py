@@ -214,6 +214,12 @@ class MainWindow(QMainWindow):
         self._build_settings_dock()
         self._build_display_dock()
         self._build_info_dock()
+        # panels can be moved or floated but not closed (closing hid them for good)
+        self._docks = {d.objectName(): d for d in self.findChildren(QDockWidget)}
+        for d in self._docks.values():
+            d.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
+        self.view_menu.addSeparator()
+        self.view_menu.addAction(QAction("Reset panel layout", self, triggered=self.reset_layout))
         self.statusBar().showMessage("Open a STEP file (Ctrl+O) or drop one on the window")
         self.progress = QProgressBar()
         self.progress.setMaximumWidth(260)
@@ -226,6 +232,22 @@ class MainWindow(QMainWindow):
         state = self.settings.value("window/state")
         if state is not None:
             self.restoreState(state)
+        # a saved layout from an older version may have panels hidden: always show them
+        for d in self._docks.values():
+            d.show()
+        self.toolbar.show()
+
+    def reset_layout(self):
+        """Put every panel back in its default place (also recovers off-screen floating panels)."""
+        areas = (("dock_settings", Qt.LeftDockWidgetArea), ("dock_display", Qt.RightDockWidgetArea),
+                 ("dock_info", Qt.RightDockWidgetArea))
+        for name, area in areas:
+            d = self._docks[name]
+            d.setFloating(False)
+            self.addDockWidget(area, d)
+            d.show()
+        self.toolbar.show()
+        self.settings.remove("window/state")
 
     # ------------------------------------------------------------ UI build
     def _build_actions(self):
@@ -251,6 +273,8 @@ class MainWindow(QMainWindow):
         hm.addAction(QAction("About", self, triggered=self.show_about))
         tb = self.addToolBar("Main")
         tb.setObjectName("toolbar_main")
+        tb.toggleViewAction().setVisible(False)
+        self.toolbar = tb
         tb.addAction(self.act_open)
         tb.addAction(self.act_export)
 
