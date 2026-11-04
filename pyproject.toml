@@ -1,6 +1,6 @@
 [project]
 name = "stepmesh"
-version = "0.2.0"
+version = "0.3.0"
 description = "Free, open source STEP to clean quad-dominant polygon mesh converter"
 readme = "README.md"
 license = { text = "MIT" }
