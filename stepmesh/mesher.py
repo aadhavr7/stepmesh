@@ -25,7 +25,7 @@ from . import occ
 from .cdt import CDTError, cdt, dist_to_segments, grow_regions, interior_point, pair_triangles, point_in_loops
 from .meshdata import Mesh
 from .params import MeshParams
-from .sizing import angle_between, count_from_weights, distribute, segment_weights
+from .sizing import angle_between, count_from_weights, distribute, grid_weights, segment_weights
 
 CORNER_DEG = 40.0
 
@@ -100,6 +100,7 @@ class Mesher:
         self.faces: list[FaceCtx] = []
         self.vgid = {}
         self.log = []
+        self._ncache = {}
 
     # ------------------------------------------------------------ main
     def _tick(self, frac, msg):
@@ -107,26 +108,56 @@ class Mesher:
             raise Cancelled()
 
     def run(self) -> Mesh:
+        from .parallel import FacePool, worker_count
+        workers = worker_count(self.p, len(self.topo.faces))
+        if workers > 1:
+            with FacePool(self, workers) as pool:
+                sizing = pool.start_sizing()          # workers size faces ...
+                self._tick(0.0, "analysing edges")
+                self._init_vertices()
+                self._init_edges()                    # ... while this runs here
+                self._setup_faces(pool.finish_sizing(sizing))
+                self._prepare_edges(pool)
+                pool.mesh_faces()
+        else:
+            self._tick(0.0, "analysing edges")
+            self._init_vertices()
+            self._init_edges()
+            self._setup_faces({})
+            self._prepare_edges()
+            self._mesh_faces_serial()
+        self.mesh.body_names = {i: n for i, n in enumerate(self.topo.body_names)}
+        from .repair import repair
+        self._tick(0.96, "checking watertightness")
+        r = repair(self)
+        if r["inserted"] or r["filled"]:
+            self.log.append(f"repair: {r['inserted']} shared edge points inserted into {r['polys_fixed']} polygons, {r['filled']} gaps filled")
+        return self.mesh
+
+    def _setup_faces(self, pre):
         nf = max(len(self.topo.faces), 1)
-        self._tick(0.0, "analysing edges")
-        self._init_vertices()
-        self._init_edges()
         for fi, f in enumerate(self.topo.faces):
             if fi % 25 == 0:
-                self._tick(0.05 + 0.25 * fi / nf, f"sizing faces {fi}/{nf}")
+                self._tick(0.25 + 0.05 * fi / nf, f"setting up faces {fi}/{nf}")
             try:
-                self.faces.append(self._init_face(fi, f))
+                self.faces.append(self._init_face(fi, f, pre=pre.get(fi)))
             except Exception as exc:
                 self.log.append(f"face {fi}: init failed: {exc}")
                 self.faces.append(None)
+
+    def _prepare_edges(self, pool=None):
         self._edge_own_counts()
         self._edge_counts()
         self._edge_params()
         if self.p.band == "cells":
             from .cells import insert_crossings
-            insert_crossings(self)
+            self._tick(0.3, "inserting trim crossings")
+            insert_crossings(self, pool)
         self._tick(0.32, "discretizing edges")
         self._edge_points()
+
+    def _mesh_faces_serial(self):
+        nf = max(len(self.topo.faces), 1)
         for k, fc in enumerate(self.faces):
             if k % 10 == 0:
                 self._tick(0.35 + 0.6 * k / nf, f"meshing faces {k}/{nf}")
@@ -137,13 +168,6 @@ class Mesher:
                 self._mesh_face(fc)
             except Exception as exc:
                 self.log.append(f"face {fc.idx} ({fc.kind}): meshing failed: {exc}")
-        self.mesh.body_names = {i: n for i, n in enumerate(self.topo.body_names)}
-        from .repair import repair
-        self._tick(0.96, "checking watertightness")
-        r = repair(self)
-        if r["inserted"] or r["filled"]:
-            self.log.append(f"repair: {r['inserted']} shared edge points inserted into {r['polys_fixed']} polygons, {r['filled']} gaps filled")
-        return self.mesh
 
     # ------------------------------------------------------------ setup
     def _init_vertices(self):
@@ -191,7 +215,8 @@ class Mesher:
             ed.own = count_from_weights(w.sum(), L, p.min_edge)
             ed.weights = (ts, w)
 
-    def _init_face(self, fi, f) -> FaceCtx:
+    def _init_face(self, fi, f, pre=None) -> FaceCtx:
+        """pre: sizing numbers already computed by a worker process (see parallel.py)."""
         fwd = occ.to_face(f.Oriented(occ.TopAbs_FORWARD))
         surf = occ.Surface(fwd)
         fc = FaceCtx(idx=fi, face=f, fwd=fwd, reversed=occ.is_reversed(f),
@@ -214,14 +239,21 @@ class Mesher:
         allpts = np.vstack(allpts)
         fc.ubox = (allpts[:, 0].min(), allpts[:, 0].max())
         fc.vbox = (allpts[:, 1].min(), allpts[:, 1].max())
-        self._face_scale(fc)
+        fc.pre = pre
+        if pre is not None:
+            fc.su, fc.sv = pre["su"], pre["sv"]
+        else:
+            self._face_scale(fc)
         for _, uses in fc.wires:
             for u in uses:
                 u.iso = self._iso_kind(fc, u.uv_samples)
         if surf.is_plane and not self._planar_grid():
             fc.kind = "planar"
             return fc
-        self._face_sizing(fc)
+        if pre is not None and "nu" in pre:
+            fc.nu, fc.nv, fc.wu, fc.wv, fc.Lu, fc.Lv = pre["nu"], pre["nv"], pre["wu"], pre["wv"], pre["Lu"], pre["Lv"]
+        else:
+            self._face_sizing(fc)
         self._classify(fc)
         if fc.kind == "trimmed" and self.p.trim_aspect > 0:
             self._apply_aspect(fc, self.p.trim_aspect)
@@ -285,19 +317,20 @@ class Mesher:
         # Angle criterion = max angle between surface normals at polygon
         # corners, applied separately along u and along v.
         max_edge = p.max_edge if self._scope_hits(fc.surf.is_plane) else 0.0
-        # along u (rows at fixed v)
-        wsum_u, Lu, Wu = [], [], np.zeros(K - 1)
-        for j in range(K):
-            w, L = segment_weights(P[:, j], N[:, j], p.angle, max_edge)
-            wsum_u.append(w.sum())
-            Lu.append(L)
-            Wu += w
-        wsum_v, Lv, Wv = [], [], np.zeros(K - 1)
-        for i in range(K):
-            w, L = segment_weights(P[i, :], N[i, :], p.angle, max_edge)
-            wsum_v.append(w.sum())
-            Lv.append(L)
-            Wv += w
+        # along u (rows at fixed v) and along v, all rows at once
+        # (sums kept in the original per-row order so results stay bit-identical)
+        w, Lu = grid_weights(P, N, p.angle, max_edge)
+        wr = np.ascontiguousarray(w.T)
+        wsum_u, Lu = [r.sum() for r in wr], list(Lu)
+        Wu = np.zeros(K - 1)
+        for r in wr:
+            Wu += r
+        w, Lv = grid_weights(P.transpose(1, 0, 2), N.transpose(1, 0, 2), p.angle, max_edge)
+        wr = np.ascontiguousarray(w.T)
+        wsum_v, Lv = [r.sum() for r in wr], list(Lv)
+        Wv = np.zeros(K - 1)
+        for r in wr:
+            Wv += r
         fc.nu = count_from_weights(max(wsum_u), max(Lu), p.min_edge)
         fc.nv = count_from_weights(max(wsum_v), max(Lv), p.min_edge)
         fc.wu = (us, Wu)
@@ -479,20 +512,29 @@ class Mesher:
         return np.vstack(uvs), gids
 
     def _normal(self, fc, uv):
-        c = ((fc.ubox[0] + fc.ubox[1]) / 2, (fc.vbox[0] + fc.vbox[1]) / 2)
-        n = fc.surf.normal(uv[0], uv[1], toward=c)
-        return -n if fc.reversed else n
+        # cached per exact UV: a vertex is shared by about four polygons
+        key = (fc.idx, float(uv[0]), float(uv[1]))
+        n = self._ncache.get(key)
+        if n is None:
+            c = ((fc.ubox[0] + fc.ubox[1]) / 2, (fc.vbox[0] + fc.vbox[1]) / 2)
+            n = fc.surf.normal(uv[0], uv[1], toward=c)
+            if fc.reversed:
+                n = -n
+            self._ncache[key] = n
+        return n
 
     def _new_point(self, fc, uv):
         return self.mesh.add_point(fc.surf.point(uv[0], uv[1]))
 
     def _emit(self, fc, gids, uvs, sign=None):
         """Add a polygon given CCW-in-UV corners; flips for reversed faces."""
-        uvs = np.asarray(uvs)
         if sign is None:
-            s = self._scaled(fc, uvs)
-            x, y = s[:, 0], s[:, 1]
-            area = 0.5 * float(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))
+            su, sv = fc.su, fc.sv
+            n = len(uvs)
+            area = 0.0
+            for k in range(n):
+                a, b = uvs[k], uvs[(k + 1) % n]
+                area += (a[0] * su) * (b[1] * sv) - (a[1] * sv) * (b[0] * su)
             sign = 1.0 if area >= 0 else -1.0
         order = list(range(len(gids)))
         if sign < 0:

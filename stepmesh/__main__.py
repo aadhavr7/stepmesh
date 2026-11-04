@@ -1,3 +1,8 @@
-from .cli import main
 import sys
-sys.exit(main())
+from multiprocessing import freeze_support
+
+from .cli import main
+
+if __name__ == "__main__":
+    freeze_support()
+    sys.exit(main())

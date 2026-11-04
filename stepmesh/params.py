@@ -43,6 +43,9 @@ class MeshParams:
     sharp_deg: float = 20.0
     # Run ShapeFix on import.
     heal: bool = True
+    # CPU processes for meshing faces: 0 = automatic (all cores on big
+    # models, single process on small ones), 1 = single process.
+    workers: int = 0
 
     @property
     def angle(self) -> float:

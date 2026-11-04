@@ -48,6 +48,33 @@ def segment_weights(points, tangents, angle_tol, max_edge, extra_dirs=None):
     return w, total
 
 
+def angle_between_nd(a, b):
+    """angle_between for arrays of shape (..., 3)."""
+    na = np.linalg.norm(a, axis=-1)
+    nb = np.linalg.norm(b, axis=-1)
+    ok = (na > 1e-12) & (nb > 1e-12)
+    c = np.zeros(na.shape)
+    c[ok] = np.einsum("...j,...j->...", a, b)[ok] / (na[ok] * nb[ok])
+    ang = np.arccos(np.clip(c, -1.0, 1.0))
+    ang[~ok] = 0.0
+    return ang
+
+
+def grid_weights(P, N, angle_tol, max_edge):
+    """segment_weights for every row of a sample grid at once.
+
+    P, N: (K, R, 3) points and turning directions, samples along axis 0,
+    rows along axis 1. Returns (weights (K-1, R), row lengths (R,)).
+    """
+    seg = np.diff(P, axis=0)
+    lens = np.linalg.norm(seg, axis=-1)
+    # per-row sums over contiguous rows, same order as segment_weights (bit-identical)
+    total = np.ascontiguousarray(lens.T).sum(axis=1)
+    turn = angle_between_nd(N[:-1], N[1:])
+    lref = np.full(total.shape, max_edge) if max_edge > 0 else np.maximum(total, 1e-12)
+    return np.maximum(turn / angle_tol, lens / lref[None, :]), total
+
+
 def count_from_weights(wsum, length, min_edge):
     n = max(1, int(math.ceil(wsum - 1e-6)))
     if min_edge > 0 and length > 0:

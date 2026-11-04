@@ -45,30 +45,37 @@ def cluster_normals(mesh: Mesh, sharp_deg: float):
     cos_t = math.cos(math.radians(sharp_deg))
     per_vertex = {}
     refs = []
-    for pi, p in enumerate(mesh.polys):
+    # plain floats: this runs once per polygon corner (hundreds of thousands)
+    for p in mesh.polys:
         row = []
         for v, n in zip(p.verts, p.normals):
-            clusters = per_vertex.setdefault(v, [])
-            nn = np.asarray(n, dtype=float)
-            hit = None
-            for ci, (acc, rep) in enumerate(clusters):
-                if np.dot(rep, nn) >= cos_t:
+            nx, ny, nz = float(n[0]), float(n[1]), float(n[2])
+            clusters = per_vertex.get(v)
+            if clusters is None:
+                clusters = per_vertex[v] = []
+            hit = -1
+            for ci, c in enumerate(clusters):
+                r = c[3]
+                if r[0] * nx + r[1] * ny + r[2] * nz >= cos_t:
                     hit = ci
                     break
-            if hit is None:
-                clusters.append([nn.copy(), nn])
+            if hit < 0:
+                clusters.append([nx, ny, nz, (nx, ny, nz)])
                 hit = len(clusters) - 1
             else:
-                clusters[hit][0] += nn
+                c = clusters[hit]
+                c[0] += nx
+                c[1] += ny
+                c[2] += nz
             row.append((v, hit))
         refs.append(row)
     normals = []
     index = {}
     for v, clusters in per_vertex.items():
-        for ci, (acc, _) in enumerate(clusters):
-            ln = np.linalg.norm(acc)
+        for ci, c in enumerate(clusters):
+            ln = math.sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2])
             index[(v, ci)] = len(normals)
-            normals.append(acc / ln if ln > 0 else acc)
+            normals.append(np.array((c[0] / ln, c[1] / ln, c[2] / ln)) if ln > 0 else np.array(c[:3]))
     poly_n = [[index[k] for k in row] for row in refs]
     return normals, poly_n
 

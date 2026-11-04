@@ -1,6 +1,8 @@
 """Thin helpers over OCP (OpenCASCADE) for reading STEP and walking B-rep topology."""
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
 from OCP.BRep import BRep_Tool
@@ -155,7 +157,7 @@ class Curve3:
     def d1(self, t):
         p, v = gp_Pnt(), gp_Vec()
         self.ad.D1(t, p, v)
-        return np.array([p.X(), p.Y(), p.Z()]), np.array([v.X(), v.Y(), v.Z()])
+        return (p.X(), p.Y(), p.Z()), (v.X(), v.Y(), v.Z())
 
 
 class Curve2:
@@ -168,41 +170,45 @@ class Curve2:
 
 
 class Surface:
+    """Fast evaluator over BRepAdaptor_Surface. Returns plain tuples: these are
+    called millions of times, and small numpy arrays cost far more than the
+    geometry itself."""
+
     def __init__(self, face):
         self.ad = BRepAdaptor_Surface(face)
         self.is_plane = self.ad.GetType() == GeomAbs_Plane
         self.u0, self.u1 = self.ad.FirstUParameter(), self.ad.LastUParameter()
         self.v0, self.v1 = self.ad.FirstVParameter(), self.ad.LastVParameter()
+        self._p, self._du, self._dv = gp_Pnt(), gp_Vec(), gp_Vec()
 
     def point(self, u, v):
         p = self.ad.Value(u, v)
         return np.array([p.X(), p.Y(), p.Z()])
 
     def d1(self, u, v):
-        p, du, dv = gp_Pnt(), gp_Vec(), gp_Vec()
+        p, du, dv = self._p, self._du, self._dv
         self.ad.D1(u, v, p, du, dv)
-        return (np.array([p.X(), p.Y(), p.Z()]),
-                np.array([du.X(), du.Y(), du.Z()]),
-                np.array([dv.X(), dv.Y(), dv.Z()]))
+        return ((p.X(), p.Y(), p.Z()), (du.X(), du.Y(), du.Z()), (dv.X(), dv.Y(), dv.Z()))
+
+    def _cross(self, u, v):
+        du, dv = self._du, self._dv
+        self.ad.D1(u, v, self._p, du, dv)
+        ax, ay, az = du.X(), du.Y(), du.Z()
+        bx, by, bz = dv.X(), dv.Y(), dv.Z()
+        nx, ny, nz = ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx
+        return nx, ny, nz, math.sqrt(nx * nx + ny * ny + nz * nz),             max(math.sqrt(ax * ax + ay * ay + az * az), math.sqrt(bx * bx + by * by + bz * bz))
 
     def normal(self, u, v, toward=None):
         """Unit normal Su x Sv. Near singular points (poles, apex) step toward `toward` (a UV point)."""
-        _, su, sv = self.d1(u, v)
-        n = np.cross(su, sv)
-        ln = np.linalg.norm(n)
+        nx, ny, nz, ln, big = self._cross(u, v)
         # singular when one derivative collapses relative to the other
         # (sphere pole: |Su| ~ 1e-16 while |Sv| = r); the cross product
         # direction is then noise
-        big = max(np.linalg.norm(su), np.linalg.norm(sv))
         if ln > 1e-8 * big * big and ln > 1e-14:
-            return n / ln
+            return np.array((nx / ln, ny / ln, nz / ln))
         if toward is not None:
             for f in (1e-4, 1e-3, 1e-2, 5e-2):
-                uu = u + f * (toward[0] - u)
-                vv = v + f * (toward[1] - v)
-                _, su, sv = self.d1(uu, vv)
-                n = np.cross(su, sv)
-                ln = np.linalg.norm(n)
+                nx, ny, nz, ln, _ = self._cross(u + f * (toward[0] - u), v + f * (toward[1] - v))
                 if ln > 1e-14:
-                    return n / ln
+                    return np.array((nx / ln, ny / ln, nz / ln))
         return np.array([0.0, 0.0, 1.0])

@@ -32,6 +32,7 @@ def build_parser():
     ap.add_argument("--weld", choices=["all", "smooth", "none"], default="all",
                     help="all: one closed mesh; smooth: split vertices only at sharp edges; none: every B-rep face its own island (exact copies along edges)")
     ap.add_argument("--no-weld", action="store_true", help="same as --weld none")
+    ap.add_argument("--workers", type=int, default=0, help="CPU processes for meshing: 0 = automatic, 1 = single process")
     ap.add_argument("--no-heal", action="store_true", help="skip ShapeFix on import")
     ap.add_argument("--group", choices=["face", "body"], default="face", help="OBJ groups per B-rep face or per body")
     ap.add_argument("--stats", help="write stats JSON here")
@@ -42,7 +43,7 @@ def build_parser():
 def params_from_args(a) -> MeshParams:
     return MeshParams(angle_deg=a.angle, max_edge=a.max_edge, max_edge_scope=a.max_edge_scope, min_edge=a.min_edge, aspect=a.aspect,
                       trim_aspect=a.trim_aspect, output=a.type, band=a.band, band_margin=a.band_margin,
-                      sharp_deg=a.sharp, heal=not a.no_heal, weld="none" if a.no_weld else a.weld)
+                      sharp_deg=a.sharp, heal=not a.no_heal, workers=a.workers, weld="none" if a.no_weld else a.weld)
 
 
 def convert(inp, out, prm: MeshParams, group="face"):
