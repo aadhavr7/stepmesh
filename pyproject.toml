@@ -1,0 +1,35 @@
+[project]
+name = "stepmesh"
+version = "0.1.0"
+description = "Free, open source STEP to clean quad-dominant polygon mesh converter"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Aadhav R" }]
+requires-python = ">=3.10"
+dependencies = [
+    "cadquery-ocp-novtk>=7.7",
+    "numpy",
+    "shapely>=2.0",
+    "triangle",
+    "mapbox-earcut",
+]
+
+[project.optional-dependencies]
+gui = ["PySide6", "PyOpenGL"]
+dev = ["pyinstaller", "build123d"]
+
+[project.scripts]
+stepmesh = "stepmesh.cli:main"
+
+[project.gui-scripts]
+stepmesh-gui = "stepmesh.gui.app:main"
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["stepmesh", "stepmesh.gui"]
+
+[tool.setuptools.package-data]
+"stepmesh.gui" = ["stepmesh.ico", "stepmesh.png"]

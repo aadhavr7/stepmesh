@@ -1,0 +1,51 @@
+# Push a version tag (for example: git tag v0.1.0 && git push --tags) and GitHub
+# builds the Windows app, runs the tests and attaches StepMesh-windows.zip to a release.
+name: Build Windows release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+      - name: Run mesh tests
+        run: python tests/run_tests.py
+      - name: Build app
+        run: pyinstaller StepMesh.spec --noconfirm
+      - name: Package
+        shell: pwsh
+        run: |
+          Copy-Item LICENSE, THIRD_PARTY_NOTICES.md dist/StepMesh/
+          Compress-Archive -Path dist/StepMesh -DestinationPath StepMesh-windows.zip
+      - name: Smoke test packaged app
+        shell: pwsh
+        run: |
+          ./dist/StepMesh/StepMesh.exe --selftest "$PWD/tests/parts/filleted_box.step" "$PWD/selftest.obj" | Out-Null
+          Get-Content selftest.selftest.txt
+          if (-not (Select-String -Path selftest.selftest.txt -Pattern "watertight=True")) { exit 1 }
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: StepMesh-windows.zip
+          generate_release_notes: true
+      - name: Keep build as artifact
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: StepMesh-windows
+          path: StepMesh-windows.zip
