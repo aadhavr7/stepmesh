@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from build123d import (
-    Align, Axis, Box, Cone, Cylinder, Location, Pos, Rot, Sphere, Torus,
+    Axis, Box, Cone, Cylinder, Pos, Rot, Sphere, Torus,
     export_step, fillet,
 )
 

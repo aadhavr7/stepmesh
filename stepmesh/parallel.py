@@ -25,6 +25,22 @@ from .meshdata import Polygon
 MIN_FACES = 150        # below this, starting workers costs more than it saves
 
 _W = {}
+_WORKER_PYTHON = None
+_EMBEDDED = False
+
+
+def set_worker_python(path):
+    """Interpreter for worker processes when sys.executable is not a plain
+    Python (for example inside an application that embeds Python)."""
+    global _WORKER_PYTHON
+    _WORKER_PYTHON = path
+
+
+def set_embedded(on=True):
+    """Running inside an application such as Blender: worker processes must
+    not re-import the host's __main__ (it needs modules only the host has)."""
+    global _EMBEDDED
+    _EMBEDDED = on
 
 
 def worker_count(params, nfaces):
@@ -143,12 +159,34 @@ class FacePool:
         from OCP.BinTools import BinTools
         path = self._tempfile(".bbrep")
         BinTools.Write_s(self.m.topo.shape, path)   # binary BREP: exact doubles
+        import multiprocessing
+        import multiprocessing.spawn as mp_spawn
+        self._old_exe = None
+        self._old_prep = None
+        if _EMBEDDED:
+            orig = mp_spawn.get_preparation_data
+
+            def prep(name, _orig=orig):
+                d = _orig(name)
+                d.pop("init_main_from_name", None)
+                d.pop("init_main_from_path", None)
+                return d
+            self._old_prep = orig
+            mp_spawn.get_preparation_data = prep
+        if _WORKER_PYTHON:
+            self._old_exe = mp_spawn.get_executable()
+            mp_spawn.set_executable(_WORKER_PYTHON)
         self.pool = ProcessPoolExecutor(max_workers=self.workers, initializer=_init_worker,
-                                        initargs=(path, self.m.p))
+                                        initargs=(path, self.m.p), mp_context=multiprocessing.get_context("spawn"))
         return self
 
     def __exit__(self, *exc):
         self.pool.shutdown(wait=True, cancel_futures=True)
+        import multiprocessing.spawn as mp_spawn
+        if self._old_exe is not None:
+            mp_spawn.set_executable(self._old_exe)
+        if self._old_prep is not None:
+            mp_spawn.get_preparation_data = self._old_prep
         for p in self.tmp:
             try:
                 os.unlink(p)

@@ -16,6 +16,20 @@ Get `StepMesh-windows.zip` from the [Releases](../../releases) page, unzip it an
 
 Windows may warn that the app is from an unknown publisher (it is not code-signed). Click **More info**, then **Run anyway**.
 
+## Blender add-on
+
+Import STEP files straight into Blender (4.2 or newer, Windows).
+
+1. From the [Releases](../../releases) page download the add-on zip for your Blender:
+   - `stepmesh_blender-...-blender4.2-5.0-windows-x64.zip` for Blender 4.2 to 5.0
+   - `stepmesh_blender-...-blender5.1-plus-windows-x64.zip` for Blender 5.1 and newer
+2. In Blender drag the zip onto the window, or use Edit > Preferences > Get Extensions > (menu) > Install from Disk.
+3. Use **File > Import > STEP (.step/.stp)**. Meshing runs in the background on all CPU cores, with progress in the status bar (Esc cancels).
+
+Each CAD body becomes one object with the exact CAD normals as custom normals, true size (millimetres become metres by default) and a `cad_face` face attribute telling which CAD surface every polygon came from. The **StepMesh** tab in the 3D View sidebar shows the settings of the selected import and a **Re-mesh** button, which rebuilds it in place without reading the file again.
+
+To build the add-on zips yourself: `python tools/build_blender_extension.py` (they appear in `dist/`).
+
 ## Run from source
 
 Needs Python 3.11 ([python.org](https://www.python.org)).

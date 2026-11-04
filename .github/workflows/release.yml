@@ -1,5 +1,5 @@
 # Push a version tag (for example: git tag v0.1.0 && git push --tags) and GitHub
-# builds the Windows app, runs the tests and attaches StepMesh-windows.zip to a release.
+# builds the Windows app and the Blender add-on, runs the tests and attaches the zips to a release.
 name: Build Windows release
 
 on:
@@ -31,6 +31,8 @@ jobs:
         run: |
           Copy-Item LICENSE, THIRD_PARTY_NOTICES.md dist/StepMesh/
           Compress-Archive -Path dist/StepMesh -DestinationPath StepMesh-windows.zip
+      - name: Build Blender extensions
+        run: python tools/build_blender_extension.py
       - name: Smoke test packaged app
         shell: pwsh
         run: |
@@ -41,11 +43,15 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: StepMesh-windows.zip
+          files: |
+            StepMesh-windows.zip
+            dist/stepmesh_blender-*.zip
           generate_release_notes: true
       - name: Keep build as artifact
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         uses: actions/upload-artifact@v4
         with:
           name: StepMesh-windows
-          path: StepMesh-windows.zip
+          path: |
+            StepMesh-windows.zip
+            dist/stepmesh_blender-*.zip

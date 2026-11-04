@@ -6,3 +6,6 @@ dist/
 out/
 _archive/
 *.selftest.txt
+blender/stepmesh_importer/wheels/
+blender/stepmesh_importer/blender_manifest.toml
+*.egg-info/

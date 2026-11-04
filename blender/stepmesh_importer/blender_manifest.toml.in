@@ -1,0 +1,22 @@
+schema_version = "1.0.0"
+
+id = "stepmesh_importer"
+version = "@VERSION@"
+name = "StepMesh"
+tagline = "Import STEP CAD files as clean quad-dominant meshes"
+maintainer = "Aadhav R <aadhav.r7@gmail.com>"
+type = "add-on"
+website = "https://github.com/aadhavr7/stepmesh"
+tags = ["Import-Export", "Mesh"]
+
+@BLENDER_VERSIONS@
+license = ["SPDX:MIT"]
+copyright = ["2026 Aadhav R"]
+platforms = ["windows-x64"]
+
+wheels = [
+@WHEELS@
+]
+
+[permissions]
+files = "Read STEP files from disk"
