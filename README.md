@@ -12,7 +12,7 @@ Free, open source STEP to polygon mesh converter that produces clean, quad-domin
 
 ## Compared with a typical STEP import
 
-Same model, same camera, Blender solid shading. Left: StepMesh. Right: a typical triangulated STEP import.
+Same model, same camera, Blender solid shading. Left: a typical triangulated STEP import. Right: StepMesh.
 
 Flat faces stay flat and lettering stays crisp, because the mesh follows the surfaces' own grid and carries the exact CAD normals instead of smoothing across long sliver triangles:
 
