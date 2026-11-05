@@ -26,7 +26,7 @@ Import STEP files straight into Blender (4.2 or newer, Windows).
 2. In Blender drag the zip onto the window, or use Edit > Preferences > Get Extensions > (menu) > Install from Disk.
 3. Use **File > Import > STEP (.step/.stp)**. Meshing runs in the background on all CPU cores, with progress in the status bar (Esc cancels).
 
-Each CAD body becomes one object with the exact CAD normals as custom normals, true size (millimetres become metres by default) and a `cad_face` face attribute telling which CAD surface every polygon came from. The **StepMesh** tab in the 3D View sidebar shows the settings of the selected import and a **Re-mesh** button, which rebuilds it in place without reading the file again.
+The STEP product tree is kept: assemblies and sub-assemblies become Empties with their CAD names, every part instance becomes a named object at its CAD position, and parts used several times (screws, bolts) are meshed once and shared as linked duplicates. Each part has the exact CAD normals as custom normals, true size (millimetres become metres by default) and a `cad_face` face attribute telling which CAD surface every polygon came from. The **StepMesh** tab in the 3D View sidebar shows the settings of the selected import and a **Re-mesh** button, which rebuilds it in place without reading the file again.
 
 To build the add-on zips yourself: `python tools/build_blender_extension.py` (they appear in `dist/`).
 

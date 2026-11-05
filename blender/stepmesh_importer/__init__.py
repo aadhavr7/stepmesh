@@ -3,8 +3,10 @@
 File > Import > STEP (.step/.stp). Meshing runs in the background (Esc
 cancels) using the bundled stepmesh library. Each CAD body becomes one
 object with exact custom normals and a "cad_face" face attribute naming the
-CAD surface every polygon came from. The StepMesh tab in the 3D View
-sidebar re-meshes an imported model with new settings.
+CAD surface every polygon came from. The STEP product tree is kept:
+assemblies become Empties, parts keep their names and placements, and parts
+used several times become linked duplicates. The StepMesh tab in the 3D
+View sidebar re-meshes an imported model with new settings.
 """
 import os
 import sys
@@ -17,6 +19,7 @@ import bpy
 import numpy as np
 from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty, PointerProperty, StringProperty
 from bpy_extras.io_utils import ImportHelper
+from mathutils import Matrix
 
 PRESETS = [("DRAFT", "Draft", "24 degrees"), ("MEDIUM", "Medium", "16 degrees"), ("FINE", "Fine", "12 degrees"),
            ("EXTRA", "Extra fine", "6 degrees"), ("CUSTOM", "Custom", "Set the angle yourself")]
@@ -75,6 +78,7 @@ def _settings_dict(src):
 class StepMeshObjectSettings(bpy.types.PropertyGroup, _Settings):
     filepath: StringProperty(name="STEP File", subtype="FILE_PATH")
     import_id: StringProperty()
+    part: IntProperty(default=-1)
     body: IntProperty(default=-1)
 
 
@@ -111,7 +115,8 @@ class _Job:
         self.cancel = False
         self.done = False
         self.error = None
-        self.bodies = None
+        self.parts = None        # part index -> list of solids (mesh arrays)
+        self.asm = None
         self.stats = None
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
@@ -123,18 +128,19 @@ class _Job:
 
     def _run(self):
         try:
+            from stepmesh.assembly import face_parts, read_assembly
             from stepmesh.meshdata import stats
             from stepmesh.mesher import Cancelled, mesh_shape
-            from stepmesh.occ import read_step
             from stepmesh.params import MeshParams
             s = self.s
             key = (os.path.abspath(self.filepath), os.path.getmtime(self.filepath), s["heal"])
             if _SHAPE_CACHE["key"] == key:
-                shape = _SHAPE_CACHE["shape"]
+                asm = _SHAPE_CACHE["shape"]
             else:
                 self.message = "reading STEP"
-                shape = read_step(self.filepath, heal=s["heal"])
-                _SHAPE_CACHE.update(key=key, shape=shape)
+                asm = read_assembly(self.filepath, heal=s["heal"])
+                _SHAPE_CACHE.update(key=key, shape=asm)
+            shape = asm.compound
             prm = MeshParams(angle_deg=s["angle"], max_edge=s["max_edge"], max_edge_scope=s["max_edge_scope"],
                              min_edge=s["min_edge"], aspect=s["aspect"], output=s["output"], band=s["band"],
                              sharp_deg=s["sharp"], weld=s["weld"])
@@ -148,26 +154,28 @@ class _Job:
                 triangulate_polys(mesh)
             self.message = "building objects"
             self.stats = stats(mesh)
-            self.bodies = _body_arrays(mesh, s)
+            self.asm = asm
+            self.parts = _part_arrays(mesh, s, face_parts(mesher, asm), len(asm.parts))
         except Exception as exc:
             self.error = f"{exc}\n{traceback.format_exc()}"
         finally:
             self.done = True
 
 
-def _body_arrays(mesh, s):
-    """Per body: vertex positions, polygon loops, per-corner normals, CAD face ids."""
+def _part_arrays(mesh, s, face_part, nparts):
+    """Per unique part, per solid: vertex positions, polygon loops, per-corner
+    normals and CAD face ids, in the part's own frame."""
     weld, scale = s["weld"], s["scale"]
     poly_n = None
     if weld == "smooth":
         from stepmesh.export_obj import cluster_normals
         _, poly_n = cluster_normals(mesh, s["sharp"])
     P = mesh.points
-    bodies = {}
+    groups = {}
     for pi, p in enumerate(mesh.polys):
-        bodies.setdefault(p.body, []).append(pi)
-    out = []
-    for body, plist in sorted(bodies.items()):
+        groups.setdefault((face_part.get(p.face, 0), p.body), []).append(pi)
+    out = {i: [] for i in range(nparts)}
+    for (part, body), plist in sorted(groups.items()):
         key_index, src, loops, starts, normals, faces = {}, [], [], [], [], []
         for pi in plist:
             p = mesh.polys[pi]
@@ -182,7 +190,7 @@ def _body_arrays(mesh, s):
                 normals.append(p.normals[c])
             faces.append(p.face)
         co = np.array([P[v] for v in src], dtype=np.float64).reshape(-1, 3) * scale
-        out.append({
+        out[part].append({
             "name": mesh.body_names.get(body, f"body_{body}"),
             "co": co.astype(np.float32).ravel(),
             "loops": np.asarray(loops, dtype=np.int32),
@@ -267,13 +275,66 @@ class _JobOperator:
         return {"FINISHED"}
 
 
-def _store(obj, filepath, settings, import_id, body):
+def _store(obj, filepath, settings, import_id, part, body):
     s = obj.stepmesh
     for k, v in settings.items():
         setattr(s, k, v)
     s.filepath = filepath
     s.import_id = import_id
+    s.part = part
     s.body = body
+
+
+def _part_meshes(job):
+    """One Blender mesh per (unique part, solid); instances share them."""
+    meshes = {}
+    for pi, solids in job.parts.items():
+        name = job.asm.part_names[pi]
+        meshes[pi] = [_make_mesh(name if len(solids) == 1 else f"{name} {k + 1}", b) for k, b in enumerate(solids)]
+    return meshes
+
+
+def _build_tree(job, coll, filepath, settings, import_id):
+    """Empties for assemblies, objects for part instances, linked duplicates for reused parts."""
+    meshes = _part_meshes(job)
+    scale = settings["scale"]
+    ext = max((float(np.abs(b["co"]).max()) for solids in job.parts.values() for b in solids if len(b["co"])), default=1.0)
+    created = []
+
+    def empty(name, parent):
+        o = bpy.data.objects.new(name, None)
+        o.empty_display_type = "PLAIN_AXES"
+        o.empty_display_size = max(ext * 0.1, 1e-4)
+        coll.objects.link(o)
+        o.parent = parent
+        _store(o, filepath, settings, import_id, -1, -1)
+        return o
+
+    def add(node, parent):
+        m = np.array(node.matrix, dtype=float)
+        m[:3, 3] *= scale
+        solids = meshes.get(node.part, []) if node.part is not None else []
+        if node.part is not None and len(solids) == 1:
+            o = bpy.data.objects.new(node.name, solids[0])
+            coll.objects.link(o)
+            o.parent = parent
+            _store(o, filepath, settings, import_id, node.part, 0)
+        else:
+            o = empty(node.name, parent)
+            for k, me in enumerate(solids):
+                c = bpy.data.objects.new(f"{node.name} {k + 1}", me)
+                coll.objects.link(c)
+                c.parent = o
+                _store(c, filepath, settings, import_id, node.part, k)
+                created.append(c)
+        o.matrix_basis = Matrix(m.tolist())
+        created.append(o)
+        for child in node.children:
+            add(child, o)
+
+    for root in job.asm.roots:
+        add(root, None)
+    return created
 
 
 class IMPORT_SCENE_OT_stepmesh(bpy.types.Operator, ImportHelper, _Settings, _JobOperator):
@@ -298,16 +359,12 @@ class IMPORT_SCENE_OT_stepmesh(bpy.types.Operator, ImportHelper, _Settings, _Job
         context.scene.collection.children.link(coll)
         for o in context.selected_objects:
             o.select_set(False)
-        first = None
-        for i, b in enumerate(job.bodies):
-            name = base if len(job.bodies) == 1 else f"{base}_{b['name']}"
-            obj = bpy.data.objects.new(name, _make_mesh(name, b))
-            coll.objects.link(obj)
-            _store(obj, self._filepath, self._settings, import_id, i)
-            obj.select_set(True)
-            first = first or obj
-        if first:
-            context.view_layer.objects.active = first
+        created = _build_tree(job, coll, self._filepath, self._settings, import_id)
+        for o in created:
+            o.select_set(True)
+        tops = [o for o in created if o.parent is None]
+        if tops:
+            context.view_layer.objects.active = tops[0]
 
 
 class OBJECT_OT_stepmesh_remesh(bpy.types.Operator, _JobOperator):
@@ -319,7 +376,7 @@ class OBJECT_OT_stepmesh_remesh(bpy.types.Operator, _JobOperator):
     @classmethod
     def poll(cls, context):
         o = context.active_object
-        return o is not None and o.type == "MESH" and bool(o.stepmesh.filepath)
+        return o is not None and bool(o.stepmesh.filepath)
 
     def execute(self, context):
         s = context.active_object.stepmesh
@@ -331,20 +388,25 @@ class OBJECT_OT_stepmesh_remesh(bpy.types.Operator, _JobOperator):
         return self._start(context, path, _settings_dict(s))
 
     def _finish(self, context, job):
-        targets = {o.stepmesh.body: o for o in bpy.data.objects
-                   if o.type == "MESH" and o.stepmesh.import_id == self._import_id}
-        for i, b in enumerate(job.bodies):
-            obj = targets.get(i)
-            if obj is None:
-                continue
-            old = obj.data
-            new = _make_mesh(old.name, b)
-            for mat in old.materials:
-                new.materials.append(mat)
-            obj.data = new
+        objs = [o for o in bpy.data.objects if o.stepmesh.import_id == self._import_id]
+        new_meshes = {}
+        for o in objs:
+            s = o.stepmesh
+            if o.type == "MESH":
+                solids = job.parts.get(s.part, [])
+                if s.body < len(solids):
+                    key = (s.part, s.body)
+                    if key not in new_meshes:
+                        old = o.data
+                        new = _make_mesh(old.name, solids[s.body])
+                        for mat in old.materials:
+                            new.materials.append(mat)
+                        new_meshes[key] = (new, old)
+                    o.data = new_meshes[key][0]
+            _store(o, self._filepath, self._settings, self._import_id, s.part, s.body)
+        for new, old in new_meshes.values():
             if old.users == 0:
                 bpy.data.meshes.remove(old)
-            _store(obj, self._filepath, self._settings, self._import_id, i)
 
 
 class VIEW3D_PT_stepmesh(bpy.types.Panel):
@@ -356,15 +418,16 @@ class VIEW3D_PT_stepmesh(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         o = context.active_object
-        if o is None or o.type != "MESH" or not o.stepmesh.filepath:
+        if o is None or not o.stepmesh.filepath:
             layout.label(text="Select an imported STEP model,")
             layout.label(text="or import one:")
             layout.operator(IMPORT_SCENE_OT_stepmesh.bl_idname, icon="IMPORT")
             return
         s = o.stepmesh
         layout.label(text=os.path.basename(s.filepath), icon="FILE")
-        me = o.data
-        layout.label(text=f"{len(me.polygons):,} polygons, {len(me.vertices):,} vertices")
+        if o.type == "MESH":
+            me = o.data
+            layout.label(text=f"{len(me.polygons):,} polygons, {len(me.vertices):,} vertices")
         _draw_settings(layout, s)
         layout.separator()
         layout.operator(OBJECT_OT_stepmesh_remesh.bl_idname, icon="FILE_REFRESH")
