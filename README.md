@@ -10,6 +10,22 @@ Free, open source STEP to polygon mesh converter that produces clean, quad-domin
 - Normals come from the exact CAD surface.
 - Exports OBJ, FBX, PLY, STL and GLB, with real units (mm to m for Blender) and Z-up or Y-up.
 
+## Compared with a typical STEP import
+
+Same model, same camera, Blender solid shading. Left: StepMesh. Right: a typical triangulated STEP import.
+
+Flat faces stay flat and lettering stays crisp, because the mesh follows the surfaces' own grid and carries the exact CAD normals instead of smoothing across long sliver triangles:
+
+![Cylinder head, shaded](docs/images/compare_head_shaded.png)
+![Cylinder head, wireframe](docs/images/compare_head_wireframe.png)
+
+Cast fillets and blends stay smooth, without dents or blotches, with fewer polygons (376,685 against 593,385 for the whole engine):
+
+![Crankcase, shaded](docs/images/compare_crankcase_shaded.png)
+![Crankcase, wireframe](docs/images/compare_crankcase_wireframe.png)
+
+Model: [Two stroke engine 133cc](https://grabcad.com/library/two-stroke-engine-133cc-1) by Design to Steel, from the GrabCAD Community library, used for these comparison images only.
+
 ## Download (Windows)
 
 Get `StepMesh-windows.zip` from the [Releases](../../releases) page, unzip it anywhere and run `StepMesh.exe`. No install or Python needed. Keep the `_internal` folder next to the exe.
